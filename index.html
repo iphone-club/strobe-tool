@@ -81,6 +81,17 @@ body {
 #gifLayer img {
     width:100%; height:100%; object-fit:cover; display:block;
     opacity:0; transition:none;
+    position:absolute; inset:0; z-index:1;
+}
+
+#gifFlash {
+    position:absolute; inset:0;
+    width:100%; height:100%;
+    z-index:2;
+    pointer-events:none;
+    opacity:0;
+    background:#000;
+    mix-blend-mode:overlay;
 }
 @media (max-width:600px) {
     .controls {
@@ -131,7 +142,10 @@ body {
 
 <div id="mediaLayer">
     <canvas id="compositor"></canvas>
-    <div id="gifLayer"></div>
+    <div id="gifLayer">
+        <img id="gifMedia" alt="" />
+        <div id="gifFlash"></div>
+    </div>
 </div>
 
 </body>
@@ -140,6 +154,8 @@ body {
     const body = document.body;
     const canvas = document.getElementById('compositor');
     const gifLayer = document.getElementById('gifLayer');
+    const gifMedia = document.getElementById('gifMedia');
+    const gifFlash = document.getElementById('gifFlash');
     const ctx = canvas.getContext('2d', { alpha: false, desynchronized: true });
 
     const periodSlider = document.getElementById('period');
@@ -256,11 +272,14 @@ body {
         ctx.fillStyle = '#000000';
         ctx.fillRect(0, 0, w, h);
 
-        // GIF is a native <img> layer so the browser keeps animating every frame.
-        // Its visibility follows the exact same strobe cycle as the rest of the media.
+        // GIF stays a native <img> so the browser keeps animating every frame.
+        // A separate flash layer sits ABOVE the GIF, which makes overlay reliable.
         if (isGif && mediaElement) {
             mediaElement.style.opacity = isOn ? '1' : '0';
-            mediaElement.style.mixBlendMode = blendOn ? 'overlay' : 'normal';
+            gifFlash.style.opacity = (isOn && blendOn) ? '1' : '0';
+            gifFlash.style.background = blendOn ? getFlashColor() : '#000000';
+        } else {
+            gifFlash.style.opacity = '0';
         }
 
         if (isOn) {
@@ -330,7 +349,9 @@ body {
             mediaElement.load();
         }
 
-        gifLayer.innerHTML = '';
+        gifMedia.removeAttribute('src');
+        gifMedia.style.opacity = '0';
+        gifFlash.style.opacity = '0';
         mediaElement = null;
         mediaLoaded = false;
         isVideo = false;
@@ -433,9 +454,9 @@ body {
 
                 video.load();
             } else if (gifFile) {
-                // Keep GIF as a native animated <img>. Do NOT draw it to canvas,
-                // otherwise the browser reduces the GIF to a static frame for us.
-                const img = new Image();
+                // Keep GIF as a native animated <img>. The browser handles the animation.
+                // The color flash is a separate layer ABOVE the GIF so overlay is reliable.
+                const img = gifMedia;
                 img.decoding = 'async';
                 img.alt = '';
                 img.src = objectUrl;
@@ -445,7 +466,6 @@ body {
                 img.style.display = 'block';
                 img.style.opacity = '0';
                 img.style.pointerEvents = 'none';
-                gifLayer.appendChild(img);
 
                 img.onload = async () => {
                     try {
