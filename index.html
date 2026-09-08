@@ -70,7 +70,17 @@ body {
 }
 #compositor {
     position:absolute; inset:0; width:100%; height:100%;
-    display:block; background:#000;
+    display:block; background:#000; z-index:1;
+}
+
+#gifLayer {
+    position:absolute; inset:0; width:100%; height:100%;
+    z-index:2; pointer-events:none; overflow:hidden;
+}
+
+#gifLayer img {
+    width:100%; height:100%; object-fit:cover; display:block;
+    opacity:0; transition:none;
 }
 @media (max-width:600px) {
     .controls {
@@ -121,6 +131,7 @@ body {
 
 <div id="mediaLayer">
     <canvas id="compositor"></canvas>
+    <div id="gifLayer"></div>
 </div>
 
 </body>
@@ -128,6 +139,7 @@ body {
 (function() {
     const body = document.body;
     const canvas = document.getElementById('compositor');
+    const gifLayer = document.getElementById('gifLayer');
     const ctx = canvas.getContext('2d', { alpha: false, desynchronized: true });
 
     const periodSlider = document.getElementById('period');
@@ -150,8 +162,8 @@ body {
     let mediaElement = null;
     let mediaLoaded = false;
     let isVideo = false;
-    let isGif = false;
     let objectUrl = null;
+    let isGif = false;
 
     let startTime = performance.now();
     let rafId = null;
@@ -239,30 +251,32 @@ body {
         const cyclePos = (elapsed % period) / period;
         const isOn = cyclePos < duty;
 
-        // Always start from a clean frame. No CSS blend state is involved.
+        // Always clear the compositor to black first.
         ctx.globalCompositeOperation = 'source-over';
         ctx.fillStyle = '#000000';
         ctx.fillRect(0, 0, w, h);
 
+        // GIF is a native <img> layer so the browser keeps animating every frame.
+        // Its visibility follows the exact same strobe cycle as the rest of the media.
+        if (isGif && mediaElement) {
+            mediaElement.style.opacity = isOn ? '1' : '0';
+            mediaElement.style.mixBlendMode = blendOn ? 'overlay' : 'normal';
+        }
+
         if (isOn) {
-            // Base flash.
-            ctx.globalCompositeOperation = 'source-over';
-            ctx.fillStyle = getFlashColor();
-            ctx.fillRect(0, 0, w, h);
+            // When blend is ON, the flash becomes the base and media is composited over it.
+            if (blendOn) {
+                ctx.globalCompositeOperation = 'source-over';
+                ctx.fillStyle = getFlashColor();
+                ctx.fillRect(0, 0, w, h);
+            }
 
-            if (mediaLoaded && mediaElement) {
-                const ready =
-                    !isVideo ||
-                    mediaElement.readyState >= HTMLMediaElement.HAVE_CURRENT_DATA;
+            // Non-GIF image/video media is rendered through canvas.
+            if (mediaLoaded && mediaElement && !isGif) {
+                const ready = !isVideo || mediaElement.readyState >= HTMLMediaElement.HAVE_CURRENT_DATA;
 
-                if (ready && !isGif) {
-                    if (blendOn) {
-                        // Real canvas OVERLAY compositing.
-                        // This is deterministic for both images and videos.
-                        ctx.globalCompositeOperation = 'overlay';
-                    } else {
-                        ctx.globalCompositeOperation = 'source-over';
-                    }
+                if (ready) {
+                    ctx.globalCompositeOperation = blendOn ? 'overlay' : 'source-over';
 
                     if (isVideo) {
                         drawCover(
@@ -284,24 +298,13 @@ body {
 
                     ctx.globalCompositeOperation = 'source-over';
                 }
+            }
 
-                if (isVideo && mediaElement.paused) {
-                    mediaElement.play().catch(() => {});
-                }
-
-                // GIFs stay as real <img> elements so the browser keeps animating them.
-                if (isGif && mediaElement) {
-                    mediaElement.style.opacity = '1';
-                    mediaElement.style.mixBlendMode = blendOn ? 'overlay' : 'normal';
-                }
+            if (isVideo && mediaElement && mediaElement.paused) {
+                mediaElement.play().catch(() => {});
             }
-        } else {
-            if (isVideo && mediaElement && !mediaElement.paused) {
-                mediaElement.pause();
-            }
-            if (isGif && mediaElement) {
-                mediaElement.style.opacity = '0';
-            }
+        } else if (isVideo && mediaElement && !mediaElement.paused) {
+            mediaElement.pause();
         }
 
         rafId = requestAnimationFrame(render);
@@ -327,6 +330,7 @@ body {
             mediaElement.load();
         }
 
+        gifLayer.innerHTML = '';
         mediaElement = null;
         mediaLoaded = false;
         isVideo = false;
@@ -383,7 +387,7 @@ body {
     uploadBtn.addEventListener('click', function() {
         const input = document.createElement('input');
         input.type = 'file';
-        input.accept = 'image/*,video/*';
+        input.accept = 'image/*,video/*,.gif';
 
         input.addEventListener('change', function(e) {
             const file = e.target.files && e.target.files[0];
@@ -394,6 +398,8 @@ body {
             uploadBtn.classList.remove('active');
 
             objectUrl = URL.createObjectURL(file);
+            const fileName = (file.name || '').toLowerCase();
+            const gifFile = file.type === 'image/gif' || fileName.endsWith('.gif');
 
             if (file.type.startsWith('video/')) {
                 const video = document.createElement('video');
@@ -407,6 +413,7 @@ body {
                 const done = () => {
                     mediaElement = video;
                     isVideo = true;
+                    isGif = false;
                     mediaLoaded = true;
 
                     uploadBtn.textContent = '📎 loaded';
@@ -425,30 +432,59 @@ body {
                 }, { once: true });
 
                 video.load();
+            } else if (gifFile) {
+                // Keep GIF as a native animated <img>. Do NOT draw it to canvas,
+                // otherwise the browser reduces the GIF to a static frame for us.
+                const img = new Image();
+                img.decoding = 'async';
+                img.alt = '';
+                img.src = objectUrl;
+                img.style.width = '100%';
+                img.style.height = '100%';
+                img.style.objectFit = 'cover';
+                img.style.display = 'block';
+                img.style.opacity = '0';
+                img.style.pointerEvents = 'none';
+                gifLayer.appendChild(img);
+
+                img.onload = async () => {
+                    try {
+                        if (img.decode) await img.decode();
+                    } catch (_) {}
+
+                    mediaElement = img;
+                    mediaLoaded = true;
+                    isVideo = false;
+                    isGif = true;
+
+                    uploadBtn.textContent = '📎 loaded';
+                    uploadBtn.classList.add('active');
+                    removeBtn.classList.add('active');
+                    restart();
+                };
+
+                img.onerror = () => {
+                    clearMedia();
+                    uploadBtn.textContent = '📎 upload';
+                    uploadBtn.classList.remove('active');
+                };
             } else if (file.type.startsWith('image/')) {
                 const img = new Image();
-                const gif = file.type === 'image/gif';
+                img.decoding = 'async';
 
-                if (gif) {
-                    img.style.width = '100%';
-                    img.style.height = '100%';
-                    img.style.objectFit = 'cover';
-                    img.style.display = 'block';
-                    img.style.opacity = '0';
-                    img.style.pointerEvents = 'none';
-                    mediaLayer.appendChild(img);
-                    isGif = true;
-                }
+                img.onload = async () => {
+                    try {
+                        if (img.decode) await img.decode();
+                    } catch (_) {}
 
-                img.onload = () => {
                     mediaElement = img;
                     isVideo = false;
+                    isGif = false;
                     mediaLoaded = true;
 
                     uploadBtn.textContent = '📎 loaded';
                     uploadBtn.classList.add('active');
                     removeBtn.classList.add('active');
-
                     restart();
                 };
 
