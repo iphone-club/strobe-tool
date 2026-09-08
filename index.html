@@ -150,6 +150,7 @@ body {
     let mediaElement = null;
     let mediaLoaded = false;
     let isVideo = false;
+    let isGif = false;
     let objectUrl = null;
 
     let startTime = performance.now();
@@ -254,7 +255,7 @@ body {
                     !isVideo ||
                     mediaElement.readyState >= HTMLMediaElement.HAVE_CURRENT_DATA;
 
-                if (ready) {
+                if (ready && !isGif) {
                     if (blendOn) {
                         // Real canvas OVERLAY compositing.
                         // This is deterministic for both images and videos.
@@ -287,9 +288,20 @@ body {
                 if (isVideo && mediaElement.paused) {
                     mediaElement.play().catch(() => {});
                 }
+
+                // GIFs stay as real <img> elements so the browser keeps animating them.
+                if (isGif && mediaElement) {
+                    mediaElement.style.opacity = '1';
+                    mediaElement.style.mixBlendMode = blendOn ? 'overlay' : 'normal';
+                }
             }
-        } else if (isVideo && mediaElement && !mediaElement.paused) {
-            mediaElement.pause();
+        } else {
+            if (isVideo && mediaElement && !mediaElement.paused) {
+                mediaElement.pause();
+            }
+            if (isGif && mediaElement) {
+                mediaElement.style.opacity = '0';
+            }
         }
 
         rafId = requestAnimationFrame(render);
@@ -318,6 +330,7 @@ body {
         mediaElement = null;
         mediaLoaded = false;
         isVideo = false;
+        isGif = false;
         uploadBtn.textContent = '📎 upload';
         uploadBtn.classList.remove('active');
         removeBtn.classList.remove('active');
@@ -414,6 +427,18 @@ body {
                 video.load();
             } else if (file.type.startsWith('image/')) {
                 const img = new Image();
+                const gif = file.type === 'image/gif';
+
+                if (gif) {
+                    img.style.width = '100%';
+                    img.style.height = '100%';
+                    img.style.objectFit = 'cover';
+                    img.style.display = 'block';
+                    img.style.opacity = '0';
+                    img.style.pointerEvents = 'none';
+                    mediaLayer.appendChild(img);
+                    isGif = true;
+                }
 
                 img.onload = () => {
                     mediaElement = img;
